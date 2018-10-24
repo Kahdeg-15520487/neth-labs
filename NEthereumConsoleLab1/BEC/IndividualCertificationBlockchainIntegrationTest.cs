@@ -93,7 +93,7 @@ namespace NEthereumConsoleLab1.BEC
             CancellationTokenSource cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var timer = new Stopwatch();
             timer.Start();
-            IEnumerable<Task<TransactionReceipt>> txReceiptTaskQuery = hashList.Select(hash =>
+            IEnumerable<Task<TransactionReceipt>> txReceiptTaskQuery = hashList.First().Select(hash =>
                 web3.Eth.DeployContract.SendRequestAndWaitForReceiptAsync(
                     contractAbi,
                     byteCode,
@@ -117,48 +117,128 @@ namespace NEthereumConsoleLab1.BEC
         }
 
         [Fact]
-        public async Task ShouldCallBulkDeployContractWithWhenAnyUsingIProgress()
+        public async Task ShouldCallBulkDeployContractWithUsingIProgress()
         {
             var web3 = ethereumClientIntegrationFixture.GetWeb3();
 
-            //init a progress reporter
             IProgress<(TransactionReceipt receipt, long runtime)> progress =
-                new Progress<(TransactionReceipt receipt, long runtime)>(
-                    async (value) =>
-                    {
-                        var (receipt, runtime) = value;
+                new Progress<(TransactionReceipt receipt, long runtime)>(DODODO);
 
-                        var contract = web3.Eth.GetContract(contractAbi, receipt.ContractAddress);
-                        var hashFunc = contract.GetFunction("hashValue");
-                        var reHashValue = await hashFunc.CallAsync<string>();
-                        output.WriteLine($"hashValue:{reHashValue}, runTime:{runtime}");
-                        Assert.Contains(reHashValue, hashList);
-                    }
-                );
-
-            await ShouldBulkDeployContractWithWhenAny(web3, progress);
+            await ShouldBulkDeployContractWithUsingIProgress(web3, progress);
         }
 
-        public async Task ShouldBulkDeployContractWithWhenAny(Nethereum.Web3.Web3 web3, IProgress<(TransactionReceipt receipt, long runtime)> progress)
+        public void DODODO((TransactionReceipt receipt, long runtime) value)
+        {
+            var web3 = ethereumClientIntegrationFixture.GetWeb3();
+            var (receipt, runtime) = value;
+
+            //check null receipt
+            if (receipt is null)
+            {
+                output.WriteLine("null");
+                return;
+            }
+
+            var contract = web3.Eth.GetContract(contractAbi, receipt.ContractAddress);
+            var hashFunc = contract.GetFunction("hashValue");
+            var reHashValue = hashFunc.CallAsync<string>().Result;
+
+            //V invalid operation due to xunit claiming there is no test running
+            output.WriteLine($"hashValue:{reHashValue}, runTime:{runtime}");
+            Assert.Contains(reHashValue, hashList);
+        }
+
+        public async Task ShouldBulkDeployContractWithUsingIProgress(Nethereum.Web3.Web3 web3, IProgress<(TransactionReceipt receipt, long runtime)> progress)
+        {
+            int waitBeforeEachQuerry = 1000;
+
+            IProgress<string> txIdProgress =
+                new Progress<string>(
+                    async (txId) =>
+                    {
+                        output.WriteLine($"txId: {txId}");
+                        var value = await ShouldQuerryReceiptOnTxId(web3, txId, waitBeforeEachQuerry);
+                        progress.Report(value);
+                    });
+
+            await ShouldBulkRequestTransactionId(web3, txIdProgress);
+        }
+
+        public async Task ShouldBulkRequestTransactionId(Nethereum.Web3.Web3 web3, IProgress<string> progress)
+        {
+            //var txId = await web3.Eth.DeployContract.SendRequestAsync(contractAbi, byteCode, sender, gasLimit, hashValue);
+            List<Task<string>> txIdTaskQuery = hashList.Take(1).Select(hash =>
+               web3.Eth.DeployContract.SendRequestAsync(
+                   contractAbi,
+                   byteCode,
+                   sender,
+                   gasLimit,
+                   //todo remove cancellation token?
+                   null,
+                   hash
+               )).ToList();
+
+            while (txIdTaskQuery.Count > 0)
+            {
+                try
+                {
+                    //get the first completed task in the task list
+                    var completedTask = await Task.WhenAny(txIdTaskQuery);
+                    //remove it from the task list
+                    txIdTaskQuery.Remove(completedTask);
+
+                    //the quest result is here, maybe implement some kind of INotifier
+                    var txId = await completedTask;
+                    progress.Report(txId);
+                }
+                catch (Exception ex)
+                {
+                    //todo catch and log exception
+                }
+            }
+        }
+
+        public async Task<(TransactionReceipt receipt, long runtime)> ShouldQuerryReceiptOnTxId(Nethereum.Web3.Web3 web3, string txId, int waitBeforeEachQuerry)
+        {
+            var timer = new Stopwatch();
+            timer.Start();
+
+            (TransactionReceipt receipt, long runtime) result = (null, 0);
+            while (true)
+            {
+                result = await web3.Eth.Transactions.GetTransactionReceipt
+                                    .SendRequestAsync(txId)
+                                    .ContinueWith(async (t) =>
+                                    {
+                                        var receipt = await t;
+                                        var runtime = timer.ElapsedMilliseconds;
+                                        return (receipt, runtime);
+                                    }).Result;
+
+                if (result.receipt != null)
+                {
+                    timer.Stop();
+                    return result;
+                }
+                else
+                {
+                    await Task.Delay(waitBeforeEachQuerry);
+                }
+            }
+        }
+
+        public async Task ShouldBulkDeployContractWithWhenAny(Nethereum.Web3.Web3 web3, IEnumerable<string> txIds, IProgress<(TransactionReceipt receipt, long runtime)> progress)
         {
             CancellationTokenSource cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var timer = new Stopwatch();
             timer.Start();
 
             //initialize task list
-            List<Task<(TransactionReceipt receipt, long runtime)>> txReceiptTaskQuery = hashList.Select(hash =>
-                web3.Eth.DeployContract.SendRequestAndWaitForReceiptAsync(
-                    contractAbi,
-                    byteCode,
-                    sender,
-                    gasLimit,
-                    //todo remove cancellation token?
-                    cancellationToken,
-                    hash
-                ).ContinueWith(t => (t.Result, timer.ElapsedMilliseconds))).ToList();
-
-            //intialize result list
-            List<(TransactionReceipt receipt, long runtime)> receipts = new List<(TransactionReceipt receipt, long runtime)>();
+            List<Task<(TransactionReceipt receipt, long runtime)>> txReceiptTaskQuery =
+                txIds.Select(txId => web3.Eth.Transactions.GetTransactionReceipt
+                                .SendRequestAsync(txId)
+                                .ContinueWith(t => (t.Result, timer.ElapsedMilliseconds))
+                            ).ToList();
 
             //enter interleaving pattern
             //loop through the task list
@@ -174,7 +254,6 @@ namespace NEthereumConsoleLab1.BEC
                     //the quest result is here, maybe implement some kind of INotifier
                     var receiptQuerryResult = await completedTask;
                     progress.Report(receiptQuerryResult);
-                    receipts.Add(receiptQuerryResult);
                 }
                 catch (Exception ex)
                 {
@@ -184,17 +263,6 @@ namespace NEthereumConsoleLab1.BEC
 
             // the following portion of code will be executed after all querry task have been completed
             timer.Stop();
-            //output.WriteLine("Deployment elapsed time: {0} (s)", TimeSpan.FromMilliseconds(timer.ElapsedMilliseconds).Seconds);
-
-            //foreach ((var transactionReceipt, var runtime) in receipts)
-            //{
-            //    var contract = web3.Eth.GetContract(contractAbi, transactionReceipt.ContractAddress);
-            //    var hashFunc = contract.GetFunction("hashValue");
-            //    var reHashValue = await hashFunc.CallAsync<string>();
-            //    output.WriteLine($"hashValue:{reHashValue}, runTime:{runtime}");
-            //    Assert.Contains(reHashValue, hashList);
-            //}
-
         }
 
         [Fact]
