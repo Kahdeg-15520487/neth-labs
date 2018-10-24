@@ -117,9 +117,30 @@ namespace NEthereumConsoleLab1.BEC
         }
 
         [Fact]
-        public async Task ShouldBulkDeployContractWithWhenAny()
+        public async Task ShouldCallBulkDeployContractWithWhenAnyUsingIProgress()
         {
             var web3 = ethereumClientIntegrationFixture.GetWeb3();
+
+            //init a progress reporter
+            IProgress<(TransactionReceipt receipt, long runtime)> progress =
+                new Progress<(TransactionReceipt receipt, long runtime)>(
+                    async (value) =>
+                    {
+                        var (receipt, runtime) = value;
+
+                        var contract = web3.Eth.GetContract(contractAbi, receipt.ContractAddress);
+                        var hashFunc = contract.GetFunction("hashValue");
+                        var reHashValue = await hashFunc.CallAsync<string>();
+                        output.WriteLine($"hashValue:{reHashValue}, runTime:{runtime}");
+                        Assert.Contains(reHashValue, hashList);
+                    }
+                );
+
+            await ShouldBulkDeployContractWithWhenAny(web3, progress);
+        }
+
+        public async Task ShouldBulkDeployContractWithWhenAny(Nethereum.Web3.Web3 web3, IProgress<(TransactionReceipt receipt, long runtime)> progress)
+        {
             CancellationTokenSource cancellationToken = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var timer = new Stopwatch();
             timer.Start();
@@ -131,6 +152,7 @@ namespace NEthereumConsoleLab1.BEC
                     byteCode,
                     sender,
                     gasLimit,
+                    //todo remove cancellation token?
                     cancellationToken,
                     hash
                 ).ContinueWith(t => (t.Result, timer.ElapsedMilliseconds))).ToList();
@@ -151,6 +173,7 @@ namespace NEthereumConsoleLab1.BEC
 
                     //the quest result is here, maybe implement some kind of INotifier
                     var receiptQuerryResult = await completedTask;
+                    progress.Report(receiptQuerryResult);
                     receipts.Add(receiptQuerryResult);
                 }
                 catch (Exception ex)
@@ -161,16 +184,16 @@ namespace NEthereumConsoleLab1.BEC
 
             // the following portion of code will be executed after all querry task have been completed
             timer.Stop();
-            output.WriteLine("Deployment elapsed time: {0} (s)", TimeSpan.FromMilliseconds(timer.ElapsedMilliseconds).Seconds);
+            //output.WriteLine("Deployment elapsed time: {0} (s)", TimeSpan.FromMilliseconds(timer.ElapsedMilliseconds).Seconds);
 
-            foreach ((var transactionReceipt, var runtime) in receipts)
-            {
-                var contract = web3.Eth.GetContract(contractAbi, transactionReceipt.ContractAddress);
-                var hashFunc = contract.GetFunction("hashValue");
-                var reHashValue = await hashFunc.CallAsync<string>();
-                output.WriteLine($"hashValue:{reHashValue}, runTime:{runtime}");
-                Assert.Contains(reHashValue, hashList);
-            }
+            //foreach ((var transactionReceipt, var runtime) in receipts)
+            //{
+            //    var contract = web3.Eth.GetContract(contractAbi, transactionReceipt.ContractAddress);
+            //    var hashFunc = contract.GetFunction("hashValue");
+            //    var reHashValue = await hashFunc.CallAsync<string>();
+            //    output.WriteLine($"hashValue:{reHashValue}, runTime:{runtime}");
+            //    Assert.Contains(reHashValue, hashList);
+            //}
 
         }
 
